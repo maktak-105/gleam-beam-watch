@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BEAM Watch GUI</title>
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <h1>BEAM Watch GUI</h1>
+        
+        <div class="input-section">
+            <h2>監視対象の追加</h2>
+            <input type="text" id="urlInput" class="url-input" placeholder="https://example.com">
+            <button id="addButton" class="add-button">追加</button>
+            <button id="refreshButton" class="refresh-button">今すぐチェック</button>
+        </div>
+        
+        <div id="targetsContainer">
+            <!-- 監視対象一覧はJavaScriptで生成 -->
+        </div>
+        
+        <div id="resultsContainer">
+            <!-- 監視結果一覧はJavaScriptで生成 -->
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
