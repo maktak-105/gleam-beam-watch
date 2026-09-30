@@ -39,7 +39,7 @@ pub type ServerState {
 
 // 初期状態の作成
 pub fn initial_state() -> ServerState {
-  ServerState(targets = [], results = map.new())
+  ServerState(targets: [], results: map.new())
 }
 
 // 新しい監視対象を追加
@@ -120,13 +120,13 @@ pub fn handle_get_targets(request: http.Request, state: ServerState) -> http.Res
 pub fn handle_post_target(request: http.Request, state: ServerState) -> http.Response {
   // TODO: URLの取得と追加処理
   // 現在はダミーのレスポンス
-  response.ok(json.object([("status", json.string("success")]))
+  response.ok(json.object([("status", json.string("success"))]))
 }
 
 pub fn handle_delete_target(request: http.Request, state: ServerState) -> http.Response {
   // TODO: 削除処理
   // 現在はダミーのレスポンス
-  response.ok(json.object([("status", json.string("success")]))
+  response.ok(json.object([("status", json.string("success"))]))
 }
 
 // サーバーの起動
@@ -149,7 +149,7 @@ pub fn start_server() {
           handle_post_target(request, state)
         } else if string.is_prefix("/api/check", request.path) {
           // TODO: チェック処理
-          response.ok(json.object([("status", json.string("success")]))
+          response.ok(json.object([("status", json.string("success"))]))
         } else {
           response.not_found()
         }
