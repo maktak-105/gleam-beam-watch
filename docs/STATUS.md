@@ -30,9 +30,17 @@
 - 実通信: `http://httpbin.org/status/200` は `OK (HTTP 200)`、`http://httpbin.org/status/404` は `NG (HTTP 404)`、`http://example.invalid` は `NG` を返すことを確認した。結果は入力順ではなく到着順に表示された。
 - 補足: このサンドボックスのポータブルOTPはWindows証明書ストアを読み込めず、HTTPS開始時にOTP内部例外が起きた。この例外は `NG` として処理され、TLS証明書検証を無効化していない。
 
+## GUI 版
+
+- 状態: 最小構成は動作確認済み（2026-10-01）。永続化・Lustre・supervisor は未着手
+- 起動: `gleam run -m gui_server` で http://127.0.0.1:3000
+- 実装: `src/gui_server.gleam` が Wisp + Mist で `gui/` を配信し、URL 一覧と結果を BEAM プロセスに保持する。チェックは既存の `beam_watch.check` を URL ごとに別プロセスで実行する。
+- 確認: 不正 URL は 400。`http://example.com` は `OK (HTTP 200)`、`http://example.invalid` は `NG`。追加・削除・静的ファイル配信を確認した。`gleam test` は 3件合格。
+- ビルド: Mist 経由の `hpack_erl` をコンパイルするため rebar3 が必要。
+
 ## GUI 版の計画
 
-- 状態: 計画（未着手）
+- 状態: ステップ 1〜4 と、素の HTML/JS 画面まで完了。ステップ 5 以降は未着手
 - 目的: CLI で確認した並行監視を、Web ブラウザから URL を登録して結果をリアルタイムで確認できる画面にする。
 - 位置づけ: 学習用プロジェクト。動く最小構成を作るだけでなく、Gleam と BEAM の特徴的な機能（型、OTP、マルチターゲット、テスト手法）をできるだけ多く触ることを目的にする。
 - 方針: 既存の CLI 監視ロジック（並行ワーカー・再試行・判定）を再利用し、Web サーバーと画面を足す。サーバー（Erlang ターゲット）・フロント（JavaScript ターゲット）・共通の型の 3 つに分けて、1 つの言語で両側を書く構成を学ぶ。

@@ -39,6 +39,18 @@ NG  https://example.invalid (接続失敗または不正な URL)
 
 引数なしで実行すると、使い方を表示します。
 
+## GUI
+
+ブラウザから URL を登録して、同じ判定を確認できます。CLI はそのまま `gleam run` です。
+
+```powershell
+gleam run -m gui_server
+```
+
+起動後に http://127.0.0.1:3000 を開きます。追加・削除・「今すぐチェック」と、5秒ごとの自動再チェックがあります。結果はチェックが終わった順です。
+
+Mist が Erlang パッケージ `hpack_erl` を使うため、ビルドには [rebar3](https://rebar3.org) が PATH 上に必要です。
+
 ## テスト
 
 ```powershell

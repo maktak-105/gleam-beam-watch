@@ -38,7 +38,7 @@ fn check_urls(urls: List(String)) -> Nil {
   urls
   |> list.each(fn(url) {
     process.spawn_unlinked(fn() {
-      let outcome = check_with_retries(url, retry_count)
+      let outcome = check(url, retry_count)
       process.send(results, CheckResult(url, outcome))
     })
   })
@@ -63,7 +63,9 @@ fn collect_results(
   }
 }
 
-fn check_with_retries(url: String, remaining: Int) -> Outcome {
+// GUI サーバーなど外部から呼び出すためのチェック関数。
+// `remaining` 回のリトライを行って最終的な Outcome を返す。
+pub fn check(url: String, remaining: Int) -> Outcome {
   let outcome = check_once(url)
 
   case outcome {
@@ -71,7 +73,7 @@ fn check_with_retries(url: String, remaining: Int) -> Outcome {
     _ if remaining <= 1 -> outcome
     _ -> {
       process.sleep(retry_wait_ms)
-      check_with_retries(url, remaining - 1)
+      check(url, remaining - 1)
     }
   }
 }

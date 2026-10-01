@@ -1,5 +1,5 @@
-// サーバーのベースURL
-const BASE_URL = 'http://localhost:3000';
+// 画面と同じサーバーへ問い合わせる
+const BASE_URL = '';
 
 // DOM要素の取得
 const urlInput = document.getElementById('urlInput');

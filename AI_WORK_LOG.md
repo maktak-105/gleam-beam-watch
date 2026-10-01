@@ -160,3 +160,14 @@
 ## 2026-09-28 — 質問: ローカルLLMのモデル読み込みタイミング
 
 - 調査結果: Ollama の /api/ps で確認した。モデルは接続時ではなく最初のリクエスト時に読み込まれ、最後のリクエストから keep_alive の時間が過ぎると解放される。現在は provider: openai（OpenAI互換）のため keep_alive が送られず、Ollama の既定の5分が適用されている（expires_at 13:49:25＝最後のリクエスト 13:44:25 の5分後）。Continue の provider: ollama なら、既定で keep_alive 30分が送られ、`keepAlive` で変更できる（extension.js で確認）。
+
+## 2026-10-01 — GUI 版が完成していない
+
+- 指摘内容: ローカル LLM に任せていたが、簡単なアプリの GUI 版が全然完成しない。フォルダ全体を見て現状を把握し、引き継いで完成させる。
+- 計画: 先にこの指摘を記録する。続けてソース・画面・計画書を読み、壊れている箇所を特定して、既存の監視ロジックと `gui/` の画面契約を満たす動くサーバーにする。
+- 調査時点の事実: CLI（`src/beam_watch.gleam`）は実装済み。GUI は `gui/index.html`・`script.js`・`style.css` だけがあり、`src/gui_server.gleam` は空、`src/gui_server_ffi.erl` は実在しない `httpd` API を呼ぶ。`src/main.gleam` はその空関数を呼ぶだけで、`gleam run` の入口は `beam_watch.main` のまま。
+- 計画（実装）: 画面が期待している `/api/targets`・`/api/results`・`/api/check` を、Wisp と Mist で実装する。監視判定は `beam_watch.check` を再利用し、URL ごとにプロセスを分ける。状態はメモリ上の BEAM プロセスに置く。CLI の `gleam run` は変えない。
+- 実装: `mist` と `wisp` を追加した。`src/gui_server.gleam` をサーバー本体に差し替え、壊れていた `gui_server_ffi.erl` は現在時刻の取得だけにした。`gui/script.js` の接続先を、画面と同じサーバーへの相対パスにした。
+- 評価: `gleam test` は 3件合格。`gleam run -m gui_server` で 127.0.0.1:3000 が起動し、HTML / CSS / JS を返した。不正 URL は 400。`http://example.com` は OK HTTP 200、`http://example.invalid` は NG。削除後に一覧が空になることを確認した。
+- 制約: この環境の PATH に rebar3 が無く、Mist の依存 `hpack_erl` のコンパイルで一度失敗した。一時ディレクトリの rebar3 3.25.1 を PATH に足してビルドした。永続化、Lustre、supervisor はまだ入れていない。
+
