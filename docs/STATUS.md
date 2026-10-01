@@ -36,6 +36,8 @@
 - 起動: `gleam run -m gui_server` で http://127.0.0.1:3000
 - 実装: `src/gui_server.gleam` が Wisp + Mist で `gui/` を配信し、URL 一覧と結果を BEAM プロセスに保持する。チェックは既存の `beam_watch.check` を URL ごとに別プロセスで実行する。
 - 確認: 不正 URL は 400。`http://example.com` は `OK (HTTP 200)`、`http://example.invalid` は `NG`。追加・削除・静的ファイル配信を確認した。`gleam test` は 3件合格。
+- 確認間隔: 画面の保存は `/api/settings` に書き、サーバーの自動チェックがその秒数を使う。既定は 300 秒。許容範囲は 1 秒から 24 時間。画面の再表示は 5 秒。
+- 結果履歴: `data/history.sqlite3` の `checks` テーブルに URL、確認日時、死活結果（OK / NG）を保存する。最大 10,000 件。画面に出すのは新しい 10 件。監視対象を削除すると、その URL の行も削除する。
 - ビルド: Mist 経由の `hpack_erl` をコンパイルするため rebar3 が必要。
 
 ## GUI 版の計画

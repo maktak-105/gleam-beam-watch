@@ -1,4 +1,5 @@
 import beam_watch
+import check_history
 import filepath
 import gleam/dynamic/decode
 import gleam/erlang/process.{type Subject}
@@ -13,21 +14,28 @@ import gleam/result
 import gleam/string
 import mist
 import simplifile
+import sqlight.{type Connection}
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
 
 const port = 3000
 
-const check_interval_ms = 5000
+const default_interval_seconds = 300
+
+const min_interval_seconds = 1
+
+const max_interval_seconds = 86_400
 
 const check_attempts = 3
 
 const check_wait_ms = 60_000
 
-const result_history_limit = 100
-
 pub type Target {
   Target(id: Int, url: String)
+}
+
+type Settings {
+  Settings(check_interval_seconds: Int, check_interval_unit: String)
 }
 
 pub type ResultRow {
@@ -43,9 +51,12 @@ type State {
   State(
     next_id: Int,
     targets: List(Target),
-    results: List(ResultRow),
+    db: Connection,
     checking: Bool,
     queued: Option(Subject(Result(Nil, String))),
+    interval_seconds: Int,
+    interval_unit: String,
+    interval_generation: Int,
   )
 }
 
@@ -60,11 +71,17 @@ type Msg {
   Snapshot(reply: Subject(#(List(Target), List(ResultRow))))
   StartCheck(reply: CheckReply)
   CheckDone(rows: List(ResultRow), reply: CheckReply)
-  Tick
+  GetSettings(reply: Subject(Settings))
+  SetSettings(
+    seconds: Int,
+    unit: String,
+    reply: Subject(Result(Settings, String)),
+  )
+  Tick(generation: Int)
 }
 
 type Context {
-  Context(store: Subject(Msg), gui_dir: String)
+  Context(store: Subject(Msg), gui_dir: String, settings_path: String)
 }
 
 pub fn main() {
@@ -72,6 +89,86 @@ pub fn main() {
     Ok(_) -> process.sleep_forever()
     Error(reason) -> io.println("GUIサーバーを起動できませんでした: " <> reason)
   }
+}
+
+fn save_settings(
+  path: String,
+  settings: Settings,
+  targets: List(Target),
+) -> Result(Nil, String) {
+  let json_content =
+    json.object([
+      #("checkIntervalSeconds", json.int(settings.check_interval_seconds)),
+      #("checkIntervalUnit", json.string(settings.check_interval_unit)),
+      #("targets", json.array(targets, encode_target)),
+    ])
+    |> json.to_string
+  case simplifile.write(to: path, contents: json_content <> "\n") {
+    Ok(_) -> Ok(Nil)
+    Error(err) -> Error(string.inspect(err))
+  }
+}
+
+fn load_settings(path: String) -> #(Settings, List(Target)) {
+  let fallback = #(default_settings(), [])
+  case simplifile.read(from: path) {
+    Error(_) -> fallback
+    Ok(content) -> {
+      case json.parse(content, stored_decoder()) {
+        Ok(stored) -> stored
+        Error(_) -> fallback
+      }
+    }
+  }
+}
+
+fn stored_decoder() -> decode.Decoder(#(Settings, List(Target))) {
+  use seconds <- decode.optional_field(
+    "checkIntervalSeconds",
+    default_interval_seconds,
+    decode.int,
+  )
+  use unit <- decode.optional_field(
+    "checkIntervalUnit",
+    "seconds",
+    decode.string,
+  )
+  use targets <- decode.optional_field(
+    "targets",
+    [],
+    decode.list(of: decode_target_decoder()),
+  )
+  decode.success(#(normalize_settings(seconds, unit), targets))
+}
+
+fn default_settings() -> Settings {
+  Settings(
+    check_interval_seconds: default_interval_seconds,
+    check_interval_unit: "seconds",
+  )
+}
+
+fn normalize_settings(seconds: Int, unit: String) -> Settings {
+  let seconds = case seconds < min_interval_seconds {
+    True -> min_interval_seconds
+    False ->
+      case seconds > max_interval_seconds {
+        True -> max_interval_seconds
+        False -> seconds
+      }
+  }
+  let unit = case unit {
+    "minutes" | "hours" -> unit
+    _ -> "seconds"
+  }
+  Settings(check_interval_seconds: seconds, check_interval_unit: unit)
+}
+
+/// Target をデコードするデコーダー
+fn decode_target_decoder() -> decode.Decoder(Target) {
+  use id <- decode.field("id", decode.int)
+  use url <- decode.field("url", decode.string)
+  decode.success(Target(id:, url:))
 }
 
 pub fn start() -> Result(Nil, String) {
@@ -83,8 +180,10 @@ pub fn start() -> Result(Nil, String) {
     _ -> Error("画面ファイルが見つかりません: " <> index)
   })
 
-  let store = start_store()
-  let context = Context(store:, gui_dir:)
+  let settings_path = filepath.join(gui_dir, "settings.json")
+  let #(settings, loaded_targets) = load_settings(settings_path)
+  use store <- result.try(start_store(settings, loaded_targets, settings_path))
+  let context = Context(store:, gui_dir:, settings_path:)
   let secret = wisp.random_string(64)
   let handler = fn(request) { handle_request(request, context) }
 
@@ -110,54 +209,119 @@ fn gui_directory() -> String {
   }
 }
 
-fn start_store() -> Subject(Msg) {
+fn start_store(
+  settings: Settings,
+  initial_targets: List(Target),
+  settings_path: String,
+) -> Result(Subject(Msg), String) {
   let ready = process.new_subject()
   process.spawn(fn() {
-    let self = process.new_subject()
-    process.send(ready, self)
-    process.send_after(self, check_interval_ms, Tick)
-    loop(
-      self,
-      State(next_id: 1, targets: [], results: [], checking: False, queued: None),
-    )
+    case check_history.open(data_directory()) {
+      Error(reason) -> process.send(ready, Error(reason))
+      Ok(db) -> {
+        let self = process.new_subject()
+        let next_id = case initial_targets {
+          [] -> 1
+          _ ->
+            list.fold(initial_targets, 0, fn(max, target) {
+              int.max(max, target.id)
+            })
+            + 1
+        }
+        let state =
+          State(
+            next_id:,
+            targets: initial_targets,
+            db:,
+            checking: False,
+            queued: None,
+            interval_seconds: settings.check_interval_seconds,
+            interval_unit: settings.check_interval_unit,
+            interval_generation: 0,
+          )
+        schedule_tick(self, state)
+        process.send(ready, Ok(self))
+        loop(self, state, settings_path)
+      }
+    }
   })
   process.receive_forever(ready)
 }
 
-fn loop(self: Subject(Msg), state: State) -> Nil {
+fn data_directory() -> String {
+  case simplifile.current_directory() {
+    Ok(dir) -> filepath.join(dir, "data")
+    Error(_) -> "data"
+  }
+}
+
+fn schedule_tick(self: Subject(Msg), state: State) -> Nil {
+  process.send_after(
+    self,
+    state.interval_seconds * 1000,
+    Tick(state.interval_generation),
+  )
+  Nil
+}
+
+fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
   case process.receive_forever(self) {
     Add(url, reply) -> {
-      let #(state, added) = add_target(state, url)
+      let #(state, added) = add_target(self, settings_path, state, url)
       process.send(reply, added)
       let state = case added {
         Ok(_) -> begin_check(self, state, NoReply)
         Error(_) -> state
       }
-      loop(self, state)
+      loop(self, state, settings_path)
     }
     Delete(id, reply) -> {
-      let #(state, removed) = delete_target(state, id)
+      let #(state, removed) = delete_target(self, settings_path, state, id)
       process.send(reply, removed)
-      loop(self, state)
+      loop(self, state, settings_path)
     }
     Snapshot(reply) -> {
-      process.send(reply, #(state.targets, state.results))
-      loop(self, state)
+      process.send(reply, #(state.targets, latest_results(state.db)))
+      loop(self, state, settings_path)
     }
-    StartCheck(reply) -> loop(self, begin_check(self, state, reply))
+    StartCheck(reply) ->
+      loop(self, begin_check(self, state, reply), settings_path)
+    GetSettings(reply) -> {
+      process.send(reply, current_settings(state))
+      loop(self, state, settings_path)
+    }
+    SetSettings(seconds, unit, reply) -> {
+      let settings = normalize_settings(seconds, unit)
+      case save_settings(settings_path, settings, state.targets) {
+        Error(reason) -> {
+          process.send(reply, Error(reason))
+          loop(self, state, settings_path)
+        }
+        Ok(_) -> {
+          let state =
+            State(
+              ..state,
+              interval_seconds: settings.check_interval_seconds,
+              interval_unit: settings.check_interval_unit,
+              interval_generation: state.interval_generation + 1,
+            )
+          schedule_tick(self, state)
+          process.send(reply, Ok(settings))
+          loop(self, state, settings_path)
+        }
+      }
+    }
     CheckDone(rows, reply) -> {
       let queued = state.queued
       let rows =
         list.filter(rows, fn(row) {
           list.any(state.targets, fn(target) { target.url == row.url })
         })
-      let state =
-        State(
-          ..state,
-          checking: False,
-          queued: None,
-          results: remember(state.results, rows),
-        )
+      case save_results(state.db, rows) {
+        Ok(_) -> Nil
+        Error(reason) -> io.println("履歴の保存に失敗しました: " <> reason)
+      }
+      let state = State(..state, checking: False, queued: None)
       case reply {
         ReplyTo(subject) -> process.send(subject, Ok(Nil))
         NoReply -> Nil
@@ -166,16 +330,33 @@ fn loop(self: Subject(Msg), state: State) -> Nil {
         Some(subject) -> begin_check(self, state, ReplyTo(subject))
         None -> state
       }
-      loop(self, state)
+      loop(self, state, settings_path)
     }
-    Tick -> {
-      process.send_after(self, check_interval_ms, Tick)
-      loop(self, begin_check(self, state, NoReply))
+    Tick(generation) -> {
+      case generation == state.interval_generation {
+        False -> loop(self, state, settings_path)
+        True -> {
+          schedule_tick(self, state)
+          loop(self, begin_check(self, state, NoReply), settings_path)
+        }
+      }
     }
   }
 }
 
-fn add_target(state: State, url: String) -> #(State, Result(Target, String)) {
+fn current_settings(state: State) -> Settings {
+  Settings(
+    check_interval_seconds: state.interval_seconds,
+    check_interval_unit: state.interval_unit,
+  )
+}
+
+fn add_target(
+  _self: Subject(Msg),
+  settings_path: String,
+  state: State,
+  url: String,
+) -> #(State, Result(Target, String)) {
   let url = string.trim(url)
   case url {
     "" -> #(state, Error("URLを入力してください"))
@@ -193,6 +374,12 @@ fn add_target(state: State, url: String) -> #(State, Result(Target, String)) {
                   next_id: state.next_id + 1,
                   targets: list.append(state.targets, [target]),
                 )
+              let _ =
+                save_settings(
+                  settings_path,
+                  current_settings(state),
+                  state.targets,
+                )
               #(state, Ok(target))
             }
           }
@@ -202,16 +389,23 @@ fn add_target(state: State, url: String) -> #(State, Result(Target, String)) {
   }
 }
 
-fn delete_target(state: State, id: Int) -> #(State, Bool) {
+fn delete_target(
+  _self: Subject(Msg),
+  settings_path: String,
+  state: State,
+  id: Int,
+) -> #(State, Bool) {
   case list.find(state.targets, fn(target) { target.id == id }) {
     Error(_) -> #(state, False)
     Ok(target) -> {
+      let _ = check_history.delete_url(state.db, target.url)
       let state =
         State(
           ..state,
           targets: list.filter(state.targets, fn(item) { item.id != id }),
-          results: list.filter(state.results, fn(row) { row.url != target.url }),
         )
+      let _ =
+        save_settings(settings_path, current_settings(state), state.targets)
       #(state, True)
     }
   }
@@ -298,12 +492,35 @@ fn row_for(url: String, outcome: beam_watch.Outcome) -> ResultRow {
   }
 }
 
-fn remember(
-  previous: List(ResultRow),
-  rows: List(ResultRow),
-) -> List(ResultRow) {
-  list.append(rows, previous)
-  |> list.take(result_history_limit)
+fn save_results(db: Connection, rows: List(ResultRow)) -> Result(Nil, String) {
+  check_history.insert_checks(
+    db,
+    list.map(rows, fn(row) {
+      check_history.CheckRecord(
+        url: row.url,
+        checked_at: row.timestamp,
+        result: row.status,
+      )
+    }),
+  )
+}
+
+fn latest_results(db: Connection) -> List(ResultRow) {
+  case check_history.latest(db) {
+    Error(reason) -> {
+      io.println("履歴の読み込みに失敗しました: " <> reason)
+      []
+    }
+    Ok(records) ->
+      list.map(records, fn(record) {
+        ResultRow(
+          url: record.url,
+          status: record.result,
+          http_status: None,
+          timestamp: record.checked_at,
+        )
+      })
+  }
 }
 
 @external(erlang, "gui_server_ffi", "now_iso8601")
@@ -333,6 +550,9 @@ fn handle_api(
     http.Post, ["targets"] -> add_from_request(request, context)
     http.Delete, ["targets", id] -> delete_from_request(context, id)
     http.Post, ["check"] -> check_now(context)
+    http.Get, ["settings"] ->
+      json_ok(encode_settings(get_settings(context)), 200)
+    http.Post, ["settings"] -> update_settings(request, context)
     _, _ -> json_error("見つかりません", 404)
   }
 }
@@ -374,6 +594,36 @@ fn delete_from_request(context: Context, id: String) -> Response {
   }
 }
 
+fn get_settings(context: Context) -> Settings {
+  process.call(context.store, waiting: check_wait_ms, sending: GetSettings)
+}
+
+fn update_settings(request: Request, context: Context) -> Response {
+  use body <- wisp.require_json(request)
+  case decode.run(body, settings_decoder()) {
+    Error(_) -> json_error("確認間隔が不正です", 400)
+    Ok(Settings(seconds, unit)) -> {
+      let saved =
+        process.call(context.store, waiting: check_wait_ms, sending: fn(reply) {
+          SetSettings(seconds, unit, reply)
+        })
+      case saved {
+        Ok(settings) -> json_ok(encode_settings(settings), 200)
+        Error(message) -> json_error(message, 500)
+      }
+    }
+  }
+}
+
+fn settings_decoder() -> decode.Decoder(Settings) {
+  use seconds <- decode.field("checkIntervalSeconds", decode.int)
+  use unit <- decode.field("checkIntervalUnit", decode.string)
+  decode.success(Settings(
+    check_interval_seconds: seconds,
+    check_interval_unit: unit,
+  ))
+}
+
 fn check_now(context: Context) -> Response {
   let checked =
     process.call(context.store, waiting: check_wait_ms, sending: fn(reply) {
@@ -398,6 +648,13 @@ fn encode_target(target: Target) -> json.Json {
   json.object([
     #("id", json.int(target.id)),
     #("url", json.string(target.url)),
+  ])
+}
+
+fn encode_settings(settings: Settings) -> json.Json {
+  json.object([
+    #("checkIntervalSeconds", json.int(settings.check_interval_seconds)),
+    #("checkIntervalUnit", json.string(settings.check_interval_unit)),
   ])
 }
 

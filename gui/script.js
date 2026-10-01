@@ -7,6 +7,9 @@ const addButton = document.getElementById('addButton');
 const refreshButton = document.getElementById('refreshButton');
 const targetsContainer = document.getElementById('targetsContainer');
 const resultsContainer = document.getElementById('resultsContainer');
+const checkIntervalInput = document.getElementById('checkInterval');
+const intervalUnitSelect = document.getElementById('intervalUnit');
+const saveSettingsButton = document.getElementById('saveSettings');
 
 // 監視対象のリスト
 let targets = [];
@@ -14,18 +17,123 @@ let targets = [];
 // 監視結果のリスト
 let results = [];
 
+// 画面の再取得。チェック間隔とは別に、結果が出たらすぐ見えるようにする。
+const displayRefreshMs = 5000;
+
+// 設定
+let settings = {
+    checkIntervalSeconds: 300,
+    checkIntervalUnit: 'seconds'
+};
+
 // 初期化処理
 function init() {
+    loadSettings();
     loadTargets();
     loadResults();
-    
-    // イベントリスナーの設定
+    setInterval(loadTargets, displayRefreshMs);
+    setInterval(loadResults, displayRefreshMs);
+
     addButton.addEventListener('click', addTarget);
     refreshButton.addEventListener('click', checkAllTargets);
+    saveSettingsButton.addEventListener('click', saveSettings);
+}
+
+// 設定を読み込む
+async function loadSettings() {
+    try {
+        const response = await fetch(`${BASE_URL}/api/settings`);
+        if (!response.ok) {
+            updateSettingsUI();
+            return;
+        }
+        const data = await response.json();
+        settings.checkIntervalSeconds = data.checkIntervalSeconds !== undefined ? data.checkIntervalSeconds : 300;
+        settings.checkIntervalUnit = data.checkIntervalUnit || 'seconds';
+        updateSettingsUI();
+    } catch (error) {
+        console.error('設定の読み込みに失敗しました:', error);
+        updateSettingsUI();
+    }
+}
+
+// 設定を更新
+function updateSettingsUI() {
+    checkIntervalInput.value = settings.checkIntervalSeconds;
     
-    // 5秒ごとに自動更新
-    setInterval(loadTargets, 5000);
-    setInterval(loadResults, 5000);
+    // 単位を変換して表示
+    let unit = settings.checkIntervalUnit || 'seconds';
+    let value = settings.checkIntervalSeconds;
+    
+    if (unit === 'minutes' && value > 0) {
+        // 最小間隔60秒をクリップして表示（1分未満なら1分に）
+        checkIntervalInput.value = Math.max(1, value / 60);
+        intervalUnitSelect.value = 'minutes';
+    } else if (unit === 'hours' && value > 0) {
+        // 最小間隔60秒をクリップして表示（1時間未満なら1時間に）
+        checkIntervalInput.value = Math.max(1, value / 3600);
+        intervalUnitSelect.value = 'hours';
+    } else {
+        checkIntervalInput.value = Math.max(1, value);
+        intervalUnitSelect.value = 'seconds';
+    }
+}
+
+// 設定を保存
+async function saveSettings() {
+    let input = parseInt(checkIntervalInput.value);
+    const unit = intervalUnitSelect.value;
+    
+    // 範囲チェック（単位を考慮して秒換算）
+    let secondsValue;
+    if (unit === 'minutes') {
+        secondsValue = input * 60;
+    } else if (unit === 'hours') {
+        secondsValue = input * 3600;
+    } else {
+        secondsValue = input;
+    }
+    
+    // 秒換算後の範囲チェック
+    if (isNaN(secondsValue)) {
+        alert('有効な数値を入力してください');
+        return;
+    }
+    if (secondsValue < 1) {
+        alert('最小値は1秒です。1秒にクリップして保存します。');
+        secondsValue = 1;
+    }
+    
+    // 範囲チェック（上限）
+    if (secondsValue > 86400) {
+        alert('最大値は24時間（86400秒）です');
+        return;
+    }
+    
+    try {
+        const response = await fetch(`${BASE_URL}/api/settings`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+                checkIntervalSeconds: secondsValue,
+                checkIntervalUnit: unit
+            })
+        });
+        const data = await response.json();
+        if (!response.ok) {
+            alert('保存に失敗しました: ' + (data.error || '不明なエラー'));
+            return;
+        }
+        settings.checkIntervalSeconds = data.checkIntervalSeconds;
+        settings.checkIntervalUnit = data.checkIntervalUnit;
+        updateSettingsUI();
+        alert('確認間隔を ' + data.checkIntervalSeconds + ' 秒に保存しました。次のチェックから反映されます。');
+    } catch (error) {
+        console.error('設定の保存に失敗しました:', error);
+        alert('保存に失敗しました');
+    }
 }
 
 // 監視対象を読み込む
@@ -96,10 +204,10 @@ function renderResults() {
     const resultsList = document.createElement('div');
     resultsList.className = 'results-list';
     
-    // 最新の結果から表示
+    // 最新の結果から10件だけ表示する。サーバー側の履歴はそのまま残す。
     const sortedResults = [...results].sort((a, b) => {
         return new Date(b.timestamp) - new Date(a.timestamp);
-    });
+    }).slice(0, 10);
     
     sortedResults.forEach(result => {
         const resultItem = document.createElement('div');

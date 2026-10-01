@@ -17,6 +17,20 @@
             <button id="refreshButton" class="refresh-button">今すぐチェック</button>
         </div>
         
+        <div class="settings-section">
+            <h2>設定</h2>
+            <div class="setting-item">
+                <label for="checkInterval">確認間隔:</label>
+                <input type="number" id="checkInterval" class="interval-input" min="1" max="86400" value="300">
+                <select id="intervalUnit" class="interval-unit">
+                    <option value="seconds">秒</option>
+                    <option value="minutes">分</option>
+                    <option value="hours">時間</option>
+                </select>
+                <button id="saveSettings" class="save-settings-button">保存</button>
+            </div>
+        </div>
+        
         <div id="targetsContainer">
             <!-- 監視対象一覧はJavaScriptで生成 -->
         </div>

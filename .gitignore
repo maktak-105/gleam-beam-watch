@@ -1,3 +1,4 @@
 build/
 .gleam/
 erl_crash.dump
+data/
