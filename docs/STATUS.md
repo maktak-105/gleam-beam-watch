@@ -1,5 +1,14 @@
 # BEAM Watch 開発記録
 
+## ブラウザ死活（2026-11-24）
+
+- 状態: 未完成
+- ローカルのコードは、ブラウザでページが出たときだけ OK にする。同時に開くブラウザは 4 件まで。
+- AI195417 へは未配備。SYSTEM で Edge を開くと終了コード 1002、ページは 0 バイト。同じ URL を接続ユーザーで開くと 14027 バイト取れた。
+- このまま配備すると登録全件が NG になるため、出荷物は置き換えていない。
+- 稼働中の `Beam-watch` は、HTTP の状態コードで OK/NG を付ける従来の判定のまま。
+- 詳細: `plans/2026-11-24_ブラウザ死活判定_結果_v1.0.md`
+
 ## 企画
 
 - 目的: Gleam と BEAM の並行処理を学ぶため、複数 URL を同時に確認する死活監視 CLI を作る。
@@ -33,11 +42,12 @@
 ## GUI 版
 
 - 状態: 最小構成は動作確認済み（2026-10-01）。永続化・Lustre・supervisor は未着手
-- 起動: `gleam run -m gui_server` で http://127.0.0.1:3000
+- 起動: `gleam run -m gui_server` で http://127.0.0.1:3000。`BEAM_WATCH_BIND` と `BEAM_WATCH_PORT` で待受を変更できる。
+- 部内サーバー: 2026-11-24 に `AI195417` の `C:\server\Apps\beam-watch` へ配備し、タスク `Beam-watch` で常駐。画面は http://AI195417:8010/ 。初期監視対象は配備時点の待受 TCP ポート 45 件（`deploy/ai195417-settings.json`）。ファイアウォールは bunai-server の PostgreSQL 規則と同じ3範囲・Domain。
 - 実装: `src/gui_server.gleam` が Wisp + Mist で `gui/` を配信し、URL 一覧と結果を BEAM プロセスに保持する。チェックは既存の `beam_watch.check` を URL ごとに別プロセスで実行する。
 - 確認: 不正 URL は 400。`http://example.com` は `OK (HTTP 200)`、`http://example.invalid` は `NG`。追加・削除・静的ファイル配信を確認した。`gleam test` は 3件合格。
 - 確認間隔: 画面の保存は `/api/settings` に書き、サーバーの自動チェックがその秒数を使う。既定は 300 秒。許容範囲は 1 秒から 24 時間。画面の再表示は 5 秒。
-- 結果履歴: `data/history.sqlite3` の `checks` テーブルに URL、確認日時、死活結果（OK / NG）を保存する。最大 10,000 件。画面に出すのは新しい 10 件。監視対象を削除すると、その URL の行も削除する。
+- 結果履歴: `data/history.sqlite3` の `checks` テーブルに URL、確認日時、死活結果（OK / NG）を保存する。最大 10,000 件。画面には登録した対象ごとの最新結果を全部出す。監視対象を削除すると、その URL の行も削除する。
 - ビルド: Mist 経由の `hpack_erl` をコンパイルするため rebar3 が必要。
 
 ## GUI 版の計画

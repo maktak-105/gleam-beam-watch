@@ -18,7 +18,7 @@ import sqlight.{type Connection}
 import wisp.{type Request, type Response}
 import wisp/wisp_mist
 
-const port = 3000
+const default_port = 3000
 
 const default_interval_seconds = 300
 
@@ -26,9 +26,11 @@ const min_interval_seconds = 1
 
 const max_interval_seconds = 86_400
 
-const check_attempts = 3
+const check_wait_ms = 120_000
 
-const check_wait_ms = 60_000
+const browser_slots = 4
+
+const browser_result_wait_ms = 60_000
 
 pub type Target {
   Target(id: Int, url: String)
@@ -43,6 +45,7 @@ pub type ResultRow {
     url: String,
     status: String,
     http_status: Option(Int),
+    detail: String,
     timestamp: String,
   )
 }
@@ -187,19 +190,48 @@ pub fn start() -> Result(Nil, String) {
   let secret = wisp.random_string(64)
   let handler = fn(request) { handle_request(request, context) }
 
+  let bind = configured_bind()
+  let port = configured_port()
+
   handler
   |> wisp_mist.handler(secret)
   |> mist.new
-  |> mist.bind("127.0.0.1")
+  |> mist.bind(bind)
   |> mist.port(port)
   |> mist.start
   |> result.map(fn(_) {
-    io.println("BEAM Watch GUI: http://127.0.0.1:" <> int.to_string(port))
+    io.println("BEAM Watch GUI: http://" <> bind <> ":" <> int.to_string(port))
     Nil
   })
   |> result.map_error(fn(err) {
     "ポート " <> int.to_string(port) <> " の待受に失敗しました: " <> string.inspect(err)
   })
+}
+
+fn configured_bind() -> String {
+  case getenv("BEAM_WATCH_BIND") {
+    Ok(raw) ->
+      case string.trim(raw) {
+        "" -> "127.0.0.1"
+        host -> host
+      }
+    Error(_) -> "127.0.0.1"
+  }
+}
+
+fn configured_port() -> Int {
+  case getenv("BEAM_WATCH_PORT") {
+    Ok(raw) ->
+      case int.parse(string.trim(raw)) {
+        Ok(value) ->
+          case value > 0 && value < 65_536 {
+            True -> value
+            False -> default_port
+          }
+        Error(_) -> default_port
+      }
+    Error(_) -> default_port
+  }
 }
 
 fn gui_directory() -> String {
@@ -454,11 +486,17 @@ fn reply_ok(reply: CheckReply) -> Nil {
 }
 
 fn check_all(targets: List(Target)) -> List(ResultRow) {
+  targets
+  |> list.sized_chunk(browser_slots)
+  |> list.flat_map(check_chunk)
+}
+
+fn check_chunk(targets: List(Target)) -> List(ResultRow) {
   let incoming = process.new_subject()
   list.each(targets, fn(target) {
     process.spawn_unlinked(fn() {
-      let outcome = beam_watch.check(target.url, check_attempts)
-      process.send(incoming, row_for(target.url, outcome))
+      let #(outcome, detail) = beam_watch.check_detailed(target.url, 1)
+      process.send(incoming, row_for(target.url, outcome, detail))
     })
   })
   collect(incoming, list.length(targets), [])
@@ -472,7 +510,7 @@ fn collect(
   case remaining {
     0 -> rows
     _ -> {
-      case process.receive(incoming, within: check_wait_ms) {
+      case process.receive(incoming, within: browser_result_wait_ms) {
         Ok(row) -> collect(incoming, remaining - 1, [row, ..rows])
         Error(_) -> rows
       }
@@ -480,16 +518,18 @@ fn collect(
   }
 }
 
-fn row_for(url: String, outcome: beam_watch.Outcome) -> ResultRow {
+fn row_for(
+  url: String,
+  outcome: beam_watch.Outcome,
+  detail: String,
+) -> ResultRow {
   let timestamp = now_iso8601()
-  case outcome {
-    beam_watch.Healthy(status) ->
-      ResultRow(url:, status: "OK", http_status: Some(status), timestamp:)
-    beam_watch.HttpFailure(status) ->
-      ResultRow(url:, status: "NG", http_status: Some(status), timestamp:)
-    beam_watch.Unreachable ->
-      ResultRow(url:, status: "NG", http_status: None, timestamp:)
+  let status = case outcome {
+    beam_watch.Healthy(_) -> "OK"
+    beam_watch.HttpFailure(_) -> "NG"
+    beam_watch.Unreachable -> "NG"
   }
+  ResultRow(url:, status:, http_status: None, detail:, timestamp:)
 }
 
 fn save_results(db: Connection, rows: List(ResultRow)) -> Result(Nil, String) {
@@ -500,6 +540,7 @@ fn save_results(db: Connection, rows: List(ResultRow)) -> Result(Nil, String) {
         url: row.url,
         checked_at: row.timestamp,
         result: row.status,
+        detail: row.detail,
       )
     }),
   )
@@ -517,6 +558,7 @@ fn latest_results(db: Connection) -> List(ResultRow) {
           url: record.url,
           status: record.result,
           http_status: None,
+          detail: record.detail,
           timestamp: record.checked_at,
         )
       })
@@ -525,6 +567,9 @@ fn latest_results(db: Connection) -> List(ResultRow) {
 
 @external(erlang, "gui_server_ffi", "now_iso8601")
 fn now_iso8601() -> String
+
+@external(erlang, "gui_server_ffi", "getenv")
+fn getenv(name: String) -> Result(String, Nil)
 
 fn handle_request(request: Request, context: Context) -> Response {
   use <- wisp.log_request(request)
@@ -667,6 +712,7 @@ fn encode_result(row: ResultRow) -> json.Json {
     #("url", json.string(row.url)),
     #("status", json.string(row.status)),
     #("http_status", json.nullable(row.http_status, json.int)),
+    #("detail", json.string(row.detail)),
     #("timestamp", json.string(row.timestamp)),
   ])
 }

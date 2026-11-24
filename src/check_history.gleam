@@ -9,10 +9,8 @@ import sqlight.{type Connection}
 
 const kept_rows = 10_000
 
-const shown_rows = 10
-
 pub type CheckRecord {
-  CheckRecord(url: String, checked_at: String, result: String)
+  CheckRecord(url: String, checked_at: String, result: String, detail: String)
 }
 
 pub fn open(directory: String) -> Result(Connection, String) {
@@ -24,7 +22,10 @@ pub fn open(directory: String) -> Result(Connection, String) {
         Error(err) -> Error("履歴DBを開けません: " <> string.inspect(err))
         Ok(db) -> {
           case sqlight.exec(create_sql, on: db) {
-            Ok(_) -> Ok(db)
+            Ok(_) -> {
+              let _ = sqlight.exec(add_detail_sql, on: db)
+              Ok(db)
+            }
             Error(err) -> Error("履歴テーブルを作れません: " <> string.inspect(err))
           }
         }
@@ -58,8 +59,10 @@ pub fn insert_checks(
 
 pub fn latest(db: Connection) -> Result(List(CheckRecord), String) {
   let sql =
-    "select url, checked_at, result from checks order by id desc limit "
-    <> int.to_string(shown_rows)
+    "select c.url, c.checked_at, c.result, ifnull(c.detail, '') from checks c "
+    <> "inner join (select max(id) as id from checks group by url) newest "
+    <> "on c.id = newest.id "
+    <> "order by c.id desc"
   sqlight.query(sql, on: db, with: [], expecting: record_decoder())
   |> map_error
 }
@@ -77,12 +80,13 @@ pub fn delete_url(db: Connection, url: String) -> Result(Nil, String) {
 
 fn insert_one(db: Connection, record: CheckRecord) -> Result(Nil, String) {
   sqlight.query(
-    "insert into checks (url, checked_at, result) values (?, ?, ?)",
+    "insert into checks (url, checked_at, result, detail) values (?, ?, ?, ?)",
     on: db,
     with: [
       sqlight.text(record.url),
       sqlight.text(record.checked_at),
       sqlight.text(record.result),
+      sqlight.text(record.detail),
     ],
     expecting: decode.success(Nil),
   )
@@ -108,7 +112,8 @@ fn record_decoder() -> decode.Decoder(CheckRecord) {
   use url <- decode.field(0, decode.string)
   use checked_at <- decode.field(1, decode.string)
   use result <- decode.field(2, decode.string)
-  decode.success(CheckRecord(url:, checked_at:, result:))
+  use detail <- decode.field(3, decode.string)
+  decode.success(CheckRecord(url:, checked_at:, result:, detail:))
 }
 
 fn map_error(value: Result(a, sqlight.Error)) -> Result(a, String) {
@@ -120,6 +125,9 @@ create table if not exists checks (
   id integer primary key autoincrement,
   url text not null,
   checked_at text not null,
-  result text not null
+  result text not null,
+  detail text not null default ''
 )
 "
+
+const add_detail_sql = "alter table checks add column detail text not null default ''"

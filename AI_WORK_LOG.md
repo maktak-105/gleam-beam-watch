@@ -223,3 +223,75 @@
 - 計画: Cline のチャット欄の自動スクロール（最下部への追従）処理を `webview-ui/build/assets/index.js` で調査し、スクロールバー操作（ドラッグ）中は追従を止めるように修正する。バックアップを取ってから行う。
 - 調査結果: Cline の自動追従の停止（`disableAutoScrollRef`）は、window の `wheel` イベント（deltaY<0、チャット欄内）でのみ true になる。スクロールバーのドラッグは wheel イベントを発生させないため、追従が止まらず、メッセージ更新後の `setTimeout`（40ms / 70ms）で最下部に戻される。最下部に到達すると `atBottomStateChange` で追従が再開される仕組みは元からある。
 - 実装: `index.js` を `index.js.bak-20261001` にバックアップしたうえで、`mousedown` の対象が `[data-virtuoso-scroller]`（スクロールバー自身）のときに `disableAutoScrollRef.current=true` にする処理を追加した（1 箇所、`node --check` で構文確認）。反映には Reload Webviews が必要。Cline の更新で元に戻る。
+
+## 2026-11-24 — 変なエラーばかり出る
+
+- 指摘内容: 「変なエラーばっかり出すので調査してくれ」。どの画面・コマンドかはこの時点では未指定。
+- 計画: 先にこの指摘を記録する。続けて、クラッシュダンプ、直近の変更、起動中プロセス、コンパイルとテストの実出力から、繰り返し出ているエラーの実物を特定する。
+- 調査結果: BEAM Watch の不具合ではない。このセッションの `updates.jsonl` で、ターミナルコマンドのたびに `global/settings:pre_tool_use[0].hooks[0]` が exit code 1 になっている。コマンドは `C:\Users\0120025-Z100\.claude\settings.json` の bash 文（`i=$(cat); case ...`）で、PowerShell 5.1 が 51 文字目の `)` を解釈できず落ちる。表示の文字化けは「発生場所 行:1 文字:51」。同じセッション開始時に、arscontexta の `session-orient.sh` / `write-validate.sh` / `auto-commit.sh` も「PowerShell が .sh を関連付けアプリで開く」として未実行。Orca の Stop フックは 14:14 に settings.json から削除済み。ユーザー環境変数 `GROK_SHELL=pwsh` はあるが、この Grok プロセスには入っておらず、入っても `case` は PowerShell 7 の文法ではない。Git Bash は `C:\Program Files\Git\bin\bash.exe` にある。設定は変更していない。
+- 再指摘（同日）: エラーを出しているのは BEAM Watch ではなく、この Grok セッション自身だ。ORCA や PowerShell 5.1 のエラーが会話に連発して話にならない。調査を続ける。
+- 調査結果（再）: セッション `01a20c14-7dc8-7f31-909b-0eee722a3235` の `updates.jsonl` で、画面に出る失敗は次の2種類。ターミナル実行のたび `global/settings:pre_tool_use[0].hooks[0]` が exit code 1（`settings.json` の bash `case` を PowerShell 5.1 が 51 文字目で拒否、表示は「発生場所 行:1 文字:51」の文字化け）。ファイル書き込みのたび `plugin/arscontexta/hooks` の `write-validate.sh` と `auto-commit.sh` が「PowerShell would open .sh」で未実行。セッション開始時は `session-orient.sh` も同じ。フック失敗はツールを止めず、UI のスクロールバックに記録される。設定は未変更。
+- 再指示: 「で？」。説明で終わらせず、画面に出るフック失敗を止める。
+- 実装: `C:\Users\0120025-Z100\.claude\hooks\deny-google-drive.sh` に同じ拒否判定を移し、`settings.json` の PreToolUse は `Git\bin\bash.exe` 経由でそれを呼ぶ。arscontexta の `session-orient.sh`、`write-validate.sh`、`auto-commit.sh` も同じ bash.exe 経由に変えた。非 vault では各スクリプトが何もせず終了する。
+- 質問: サーバーへの実装はどうなったか。
+- 回答の根拠: `src/gui_server.gleam` に Wisp + Mist、設定、SQLite 履歴がある。`gui/settings.json` には間隔 30 秒と URL 3 件が残っている。2026-10-01 の記録では、SQLite 対応後のサーバーは起動していない。このセッション開始時に BEAM プロセスはなかった。Lustre と supervisor は未実装。今は起動していない。
+- 指示: `https://example.com` と `http://test1.example.com` はダミーなので不要。監視対象から外す。
+- 指摘: `http://ai195417` が使っているポートを全部、監視対象へ登録するよう以前指示した。実在する待受ポートを確認してから登録する。
+- 指示: ローカルではなく、サーバー `http://ai195417` にデプロイしてそこで動かす。
+- 指示: `https://maktak-105.github.io/myskill-manage/` も監視対象に登録する。登録先はローカルではなく、稼働中の AI195417。
+- 評価: `POST http://AI195417:8010/api/targets` は 201、id 46。`/api/targets` は 46 件。サーバーの `gui/settings.json` にも同じ URL がある。タスク `Beam-watch` は Running、待受は `0.0.0.0:8010`。
+- 指示: `https://fieldstyle-nav.vercel.app/` と `https://camp.jugo-shoten.com/` も AI195417 の監視対象に登録する。
+- 評価: どちらも `POST http://AI195417:8010/api/targets` が 201。id 47 と id 48。`/api/targets` は 48 件。サーバーの `gui/settings.json` にも 3 URL とも保存済み。
+- 指示: `https://shadowing-lab-eight.vercel.app/` も AI195417 の監視対象に登録する。
+- 評価: `POST http://AI195417:8010/api/targets` は 201、id 49。`/api/targets` は 49 件。サーバーの `gui/settings.json` にも保存済み。
+- 指摘: `https://camp.jugo-shoten.com/` が OK になっていない。サーバー上の確認結果と、その判定理由を調べる。
+- 調査結果: 履歴は 2026-11-24 15:21:34 と 15:25:11 の2回とも NG。HTTP ステータスは無い。AI195417 から `curl` すると、`camp.jugo-shoten.com` は Cloudflare の 172.67.203.139 と 104.21.77.21 のどちらでも TLS ハンドシェイク受信で接続がリセットされ、curl 終了 35、HTTP コード 000。TLS 1.2 指定でも同じ。`fieldstyle-nav.vercel.app` と `shadowing-lab-eight.vercel.app` も同じ切断。`maktak-105.github.io` は 200。この PC から camp へは Cloudflare Access のログイン画面まで到達して 200。画面の結果は新しい 10 件だけなので、この NG は現在の 10 件には出ていない。
+- 質問: 死活監視ではないのか。
+- 回答: 死活監視である。判定地点は AI195417。そこから接続して HTTP 2xx/3xx なら OK、接続失敗は NG。camp は外からは 200 だが、AI195417 からは TLS がリセットされるため NG。画面は対象ごとの最新状態ではなく、新しい確認 10 件だけを出す。
+- 質問: なぜ画面の結果は 10 件しか出さないのか。
+- 回答: 2026-10-01 の依頼「表示も 10 件までにする」どおり。`gui/script.js` が新しい順の 10 件に切り、`src/check_history.gleam` の `shown_rows` も 10。保存上限の 10,000 件はそのまま。対象ごとの最新 1 件ではない。
+- 質問: 対象は全数出して、結果は 10 件だけなのか。なんのためか。
+- 指摘: 10件だけでは何を監視しているのか分からない。対象ごとの最新結果を画面に全部出す。対象一覧は要らない。全数を OK/NG で出す。10件だったから10件、という説明は不可。
+- 実装: `check_history.latest` は URL ごとの最新1件を全件返す。画面は対象一覧をやめ、登録全件の最新 OK/NG を出す。未確認は「未確認」。`gleam test` は 4件合格。`gleam export erlang-shipment` のあと `Publish-ToServer.ps1` で AI195417 へ置き、タスク `Beam-watch` を止めてから起動し直した。
+- 評価: `http://AI195417:8010/api/targets` は 49件、`/api/results` も 49件。`https://camp.jugo-shoten.com/` は NG（2026-11-24T15:30:11）。配信 HTML に対象一覧の容器はない。
+- 質問: `https://shadowing-lab-eight.vercel.app/` はなぜ繋がらないのか。AI195417 からの接続を確認する。
+- 調査結果: AI195417 から `curl` すると、名前は Vercel の 216.198.79.3 と 64.29.17.3 に解決され、216.198.79.3:443 への TLS ハンドシェイク受信で接続がリセットされる。curl 終了 35。同じサーバーから `https://maktak-105.github.io/myskill-manage/` は 200。この PC からは当該 URL は 200。サイト停止ではなく、AI195417 から Vercel へ TLS が確立できない。
+- 質問: なぜ AI195417 から Vercel への TLS ハンドシェイクが途中で切れるのか。
+- 調査結果: プロキシは無い（WinHTTP は直接、環境変数も空）。`https://vercel.com/` は 64.239.109.1 で 200、`https://cloudflare.com/` は 301、`example.com` `google` `github.com` も 200。Cloudflare の trace では送信元 IP は 115.126.157.118、colo NRT、TLS 1.3。同じ 216.198.79.3 へ SNI を `vercel.com` にすると 200、SNI を `shadowing-lab-eight.vercel.app` にするとハンドシェイクで接続リセット。`64.239.109.1` へその SNI を向けてもリセット。切れる条件は宛先 IP 全体ではなく、この送信元からそのホスト名を指定したとき。`fieldstyle-nav.vercel.app` と `camp.jugo-shoten.com` も同じリセット。この PC から shadowing-lab は 200。
+- 質問: `fieldstyle-nav.vercel.app` はなぜ切れるのか。ホスト名と宛先 IP を分けて確認する。
+- 再指示: 現象報告で終わらず、原因を特定する。
+- 原因: `AI195417` から `https://fieldstyle-nav.vercel.app/` へ curl と、監視と同じ Erlang `httpc`（User-Agent `gleam_httpc/5.0.0`）の両方が HTTP 403。応答は `Server: Vercel`、`X-Vercel-Mitigated: challenge`、`Retry-After: 30`、本文は「Vercel Security Checkpoint / We're verifying your browser」。宛先 IP は `64.29.17.195`。サイト本体ではなく、Vercel のブラウザ確認が JavaScript を実行できない監視クライアントを拒否している。監視は 4xx を NG にする。同じ時刻の Erlang では `shadowing-lab-eight.vercel.app` と `camp.jugo-shoten.com` と `vercel.com` は 200。
+- 指摘: それでは使えない。
+- 回答: そのとおり。Vercel のブラウザ確認は JavaScript が必要で、この HTTP クライアントは通過できない。403 も接続失敗も画面では NG になるため、fieldstyle の死活はこの監視では判定できない。
+- 指摘: 死活監視なのにブラウザからではないから検出できないのか。それではごみだ。作り直せ。
+- 計画: 公開 HTTPS は Edge のヘッドレスで JavaScript 実行後のページを見て判定する。ローカルポートなど HTTP 以外は従来の接続確認を残す。判定理由を画面に出す。AI195417 へ載せる。
+- 指摘: コンセプトからやり直せ。全く1から考え直せ。ヘッドレス Edge でページを見て死活にする方向は棄却。
+- 状態: ブラウザ判定はローカルの書きかけで止めた。`gleam test` は 4件合格まで。export も AI195417 への publish もしていない。稼働中の監視は、HTTP の 2xx/3xx を OK、4xx/5xx と接続失敗を NG にする前の出荷のまま。
+- 対応: コードはまだ変えない。死活を「AI195417 から届くか」に定義し直し、承認を待ってから書きかけを捨てて実装する。
+- 指摘: その説明は意味が分からない。判断は、ブラウザで開くかどうか。
+- 対応: 公開サイトの死活は、ブラウザで開いてページが出るかで決める、と定義し直して答える。コードはまだ変えない。
+- 定義: ブラウザで開いてページが出ることを、死活監視という。
+- 質問: その前提で、今の仕様は正しいか。
+- 回答: 正しくない。稼働中の判定は HTTP クライアントの状態コードで、ブラウザで開いた結果ではない。`fieldstyle-nav` はブラウザではページが出るのに 403 で NG。待受ポートも同じ状態コード判定。手元の Edge 起動コードは未掲載。
+- 指示: 「で？」。説明で終えず、死活を「ブラウザで開いてページが出るか」に仕様を直す。
+- 質問: 私の提案（応答が返れば OK、ブラウザは開かない、403 も OK）はどうなのか。
+- 回答: その提案も没。ページが出たかを見ていない。今の仕様との差は 403 を OK にするかどうかだけで、死活監視になっていない。提案は捨て、ブラウザで開いてページが出たときだけ OK にする。
+- 指示: 「で？」。説明で終えず、判定を「ブラウザで開いてページが出たら OK」に変えて AI195417 の稼働中の監視へ載せる。
+- 質問: 終わったのか。提案も計画も無いのか。
+- 状態: 終わっていない。判定コードは書きかけのまま、export も AI195417 への反映もしていない。
+- 対応: 提案と作業計画を出してから実装する。計画は `plans/2026-11-24_ブラウザ死活判定_v1.0.md`。承認待ち。
+- 指摘: なぜ Fieldstyle だけ OK を確認するのか。意味が分からない。
+- 指摘: 「この範囲」とはどの範囲なのか。
+- 対応: v1.0 は残す。v1.1 で、変えるファイルと変えないものを列挙し、合格条件は登録全件のブラウザ判定にする。特定 URL の OK は合格条件にしない。コードはまだ変えない。
+- 指示: 「やれ」。`plans/2026-11-24_ブラウザ死活判定_v1.1.md` の承認として実装する。
+- 実装: ローカルの判定を、ブラウザでページが出たときだけ OK に変えた。同時起動は 4件。`gleam test` は 3件合格。`gleam export erlang-shipment` は成功。
+- 評価: AI195417 には載せていない。SYSTEM で Edge を開くと終了コード 1002、ページは 0バイト。同じ URL を接続ユーザーで開くと 14027バイト。このまま載せると全件 NG になるため、計画のリスクどおり停止した。詳細は `plans/2026-11-24_ブラウザ死活判定_結果_v1.0.md`。
+- 指示: コミットしてプッシュする。未完成であることを文書に書く。
+
+## 2026-11-24 — AI195417 へ常駐配備し、稼働ポートを監視する
+
+- 依頼内容: `\bunai-server` を参考にして、BEAM Watch を `AI195417` に実装し、常駐させる。監視する URL は、AI195417 で稼働しているポート全て。
+- 計画: 先にこの依頼を記録する。続けて、bunai-server の配備・ファイアウォールの実例と、AI195417 の待受ポート・既存アプリ配置を読み取り専用で確認し、空いているポートへ常駐タスクとして配備する。監視対象は確認できた待受ポートとする。
+- 実装: 待受を `BEAM_WATCH_BIND` と `BEAM_WATCH_PORT` で変えられるようにした。未設定時は `127.0.0.1:3000`。`deploy/Publish-ToServer.ps1` で `C:\server\Apps\beam-watch` へ OTP 29.1.1 と同梱の erlang-shipment を置き、タスク `Beam-watch`（起動時、SYSTEM、異常終了時はラッパーが再起動）を登録した。ファイアウォール `BEAM Watch (TCP 8010)` は、サーバー上の PostgreSQL 規則と同じ `172.26.208.0/20`、`10.178.32.0/20`、`160.203.88.0/24`、Domain のみ。監視対象は 2026-11-24 15時台の待受 TCP 45件で、`deploy/ai195417-settings.json` を初回だけ置いた。
+- 評価: `gleam test` は 4件合格。サーバー上の `http://127.0.0.1:8010/` と、この PC からの `http://AI195417:8010/` はどちらも 200、1689バイト。`/api/targets` は 45件。待受は `0.0.0.0:8010`。初回チェックは 45件中 OK 11、NG 34。OK は 3000、8000、8001、8002、8003、8004、8005、8080、8090、8765、17223。画面に出る結果は新しい 10件のまま。自動再チェックの間隔は 300秒。
+

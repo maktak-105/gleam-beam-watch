@@ -5,7 +5,6 @@ const BASE_URL = '';
 const urlInput = document.getElementById('urlInput');
 const addButton = document.getElementById('addButton');
 const refreshButton = document.getElementById('refreshButton');
-const targetsContainer = document.getElementById('targetsContainer');
 const resultsContainer = document.getElementById('resultsContainer');
 const checkIntervalInput = document.getElementById('checkInterval');
 const intervalUnitSelect = document.getElementById('intervalUnit');
@@ -143,7 +142,7 @@ async function loadTargets() {
         if (response.ok) {
             const data = await response.json();
             targets = data.targets || [];
-            renderTargets();
+            renderResults();
         }
     } catch (error) {
         console.error('監視対象の読み込みに失敗しました:', error);
@@ -164,52 +163,39 @@ async function loadResults() {
     }
 }
 
-// 監視対象を表示
-function renderTargets() {
-    targetsContainer.innerHTML = '<h2>監視対象一覧</h2>';
-    
-    if (targets.length === 0) {
-        targetsContainer.innerHTML += '<p>監視対象がありません</p>';
-        return;
-    }
-    
-    const targetsList = document.createElement('div');
-    targetsList.className = 'targets-list';
-    
-    targets.forEach(target => {
-        const targetItem = document.createElement('div');
-        targetItem.className = 'target-item';
-        targetItem.innerHTML = `
-            <div class="target-info">
-                <div class="target-url">${escapeHtml(target.url)}</div>
-                <div class="target-status">ID: ${target.id}</div>
-            </div>
-            <button class="delete-button" onclick="deleteTarget(${target.id})">削除</button>
-        `;
-        targetsList.appendChild(targetItem);
-    });
-    
-    targetsContainer.appendChild(targetsList);
-}
-
-// 監視結果を表示
+// 登録されている対象を、それぞれ最新の OK / NG で出す。
 function renderResults() {
     resultsContainer.innerHTML = '<h2>監視結果</h2>';
-    
-    if (results.length === 0) {
-        resultsContainer.innerHTML += '<p>監視結果がありません</p>';
+
+    if (targets.length === 0) {
+        resultsContainer.innerHTML += '<p>監視対象がありません</p>';
         return;
     }
-    
+
+    const byUrl = new Map(results.map(result => [result.url, result]));
+    const rank = { NG: 0, '未確認': 1, OK: 2 };
+    const rows = targets.map(target => {
+        const result = byUrl.get(target.url);
+        return {
+            id: target.id,
+            url: target.url,
+            status: result ? result.status : '未確認',
+            timestamp: result ? result.timestamp : '',
+            http_status: result ? result.http_status : null,
+            detail: result && result.detail ? result.detail : ''
+        };
+    }).sort((a, b) => {
+        const byStatus = (rank[a.status] ?? 1) - (rank[b.status] ?? 1);
+        if (byStatus !== 0) {
+            return byStatus;
+        }
+        return a.url.localeCompare(b.url);
+    });
+
     const resultsList = document.createElement('div');
     resultsList.className = 'results-list';
-    
-    // 最新の結果から10件だけ表示する。サーバー側の履歴はそのまま残す。
-    const sortedResults = [...results].sort((a, b) => {
-        return new Date(b.timestamp) - new Date(a.timestamp);
-    }).slice(0, 10);
-    
-    sortedResults.forEach(result => {
+
+    rows.forEach(result => {
         const resultItem = document.createElement('div');
         resultItem.className = 'result-item';
         
@@ -228,7 +214,8 @@ function renderResults() {
             </div>
             <div class="result-content">
                 <div class="result-status ${statusClass}">${result.status}</div>
-                ${result.http_status ? `<div class="result-http-status">HTTP ${result.http_status}</div>` : ''}
+                ${result.detail ? `<div class="result-http-status">${escapeHtml(result.detail)}</div>` : ''}
+                <button class="delete-button" onclick="deleteTarget(${result.id})">削除</button>
             </div>
         `;
         
