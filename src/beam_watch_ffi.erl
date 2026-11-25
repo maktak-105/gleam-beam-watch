@@ -1,6 +1,6 @@
 -module(beam_watch_ffi).
 
--export([safe_dispatch/2, browser_check/1]).
+-export([safe_dispatch/2, browser_check/1, first_line/1]).
 
 safe_dispatch(Configuration, Request) ->
     try gleam@httpc:dispatch(Configuration, Request) of
@@ -47,7 +47,7 @@ run_browser(Script, Url) ->
                 {spawn_executable, Pwsh},
                 [binary, exit_status, hide, stderr_to_stdout, {args, Args}]
             ),
-            first_line(collect_port(Port, <<>>, 45000))
+            collect_port(Port, <<>>, 45000)
     end.
 
 find_pwsh() ->
@@ -75,6 +75,7 @@ collect_port(Port, Acc, Timeout) ->
         <<Acc/binary, "\nNG タイムアウト"/utf8>>
     end.
 
+%% ブラウザ判定スクリプトの出力から、最初の1行を UTF-8 binary で返す。
 first_line(Output) ->
     Utf8 = case unicode:characters_to_binary(Output, utf8, utf8) of
         Bin when is_binary(Bin) -> Bin;
@@ -82,6 +83,7 @@ first_line(Output) ->
     end,
     Trimmed = string:trim(Utf8),
     case binary:split(Trimmed, <<"\n">>) of
-        [Head | _] -> string:trim(Head, trailing, <<"\r">>);
+        %% string:trim/3 の第3引数は文字のリスト。binary を渡すと function_clause で落ちる。
+        [Head | _] -> unicode:characters_to_binary(string:trim(Head, trailing, "\r"));
         _ -> <<"NG ページを取得できない"/utf8>>
     end.

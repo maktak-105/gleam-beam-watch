@@ -16,6 +16,9 @@ let targets = [];
 // 監視結果のリスト
 let results = [];
 
+// サーバーがチェック中か
+let checking = false;
+
 // 画面の再取得。チェック間隔とは別に、結果が出たらすぐ見えるようにする。
 const displayRefreshMs = 5000;
 
@@ -156,6 +159,7 @@ async function loadResults() {
         if (response.ok) {
             const data = await response.json();
             results = data.results || [];
+            checking = data.checking === true;
             renderResults();
         }
     } catch (error) {
@@ -165,7 +169,7 @@ async function loadResults() {
 
 // 登録されている対象を、それぞれ最新の OK / NG で出す。
 function renderResults() {
-    resultsContainer.innerHTML = '<h2>監視結果</h2>';
+    resultsContainer.innerHTML = `<h2>監視結果${checking ? ' <span class="checking">チェック中…</span>' : ''}</h2>`;
 
     if (targets.length === 0) {
         resultsContainer.innerHTML += '<p>監視対象がありません</p>';
@@ -179,6 +183,9 @@ function renderResults() {
         return {
             id: target.id,
             url: target.url,
+            alias: target.alias || '',
+            app: target.app || '',
+            destination: target.destination || '',
             status: result ? result.status : '未確認',
             timestamp: result ? result.timestamp : '',
             http_status: result ? result.http_status : null,
@@ -207,10 +214,19 @@ function renderResults() {
             statusClass = 'status-ng';
         }
         
+        // エイリアスの URL なら、アプリ名・エイリアス・転送先を出す。それ以外は URL を出す。
+        const title = result.alias
+            ? `<div class="result-title">
+                   ${result.app ? `<span class="result-app">${escapeHtml(result.app)}</span>` : ''}
+                   <a class="result-alias" href="${escapeHtml(result.url)}" target="_blank" rel="noopener">${escapeHtml(result.alias)}</a>
+                   <span class="result-destination">→ ${escapeHtml(result.destination)}</span>
+               </div>`
+            : `<div class="result-url">${escapeHtml(result.url)}</div>`;
+
         resultItem.innerHTML = `
             <div class="result-header">
-                <div class="result-url">${escapeHtml(result.url)}</div>
-                <div class="result-timestamp">${formatDateTime(result.timestamp)}</div>
+                ${title}
+                <div class="result-timestamp">${result.timestamp ? formatDateTime(result.timestamp) : ''}</div>
             </div>
             <div class="result-content">
                 <div class="result-status ${statusClass}">${result.status}</div>
@@ -287,7 +303,10 @@ async function checkAllTargets() {
             method: 'POST'
         });
         
+        // サーバーはチェックの終わりを待たずに返す。結果は5秒ごとの再表示で反映される。
         if (response.ok) {
+            checking = true;
+            renderResults();
             loadResults();
         } else {
             const errorData = await response.json();

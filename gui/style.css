@@ -134,6 +134,29 @@ h1 {
     color: #333;
 }
 
+.result-title {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 10px;
+}
+
+.result-app {
+    font-weight: bold;
+    color: #333;
+}
+
+.result-alias {
+    font-family: Consolas, "Courier New", monospace;
+    color: #0056b3;
+}
+
+.result-destination {
+    font-family: Consolas, "Courier New", monospace;
+    font-size: 13px;
+    color: #666;
+}
+
 .result-timestamp {
     font-size: 12px;
     color: #666;
@@ -155,6 +178,16 @@ h1 {
     margin-left: 10px;
     font-size: 14px;
     color: #666;
+}
+
+.checking {
+    font-size: 14px;
+    font-weight: normal;
+    color: #b8860b;
+}
+
+.result-content .delete-button {
+    margin-left: auto;
 }
 
 .settings-section {

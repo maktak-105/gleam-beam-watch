@@ -63,8 +63,16 @@ pub fn check(url: String, remaining: Int) -> Outcome {
 
 // 登録 URL はすべて、ブラウザで1回開いた結果だけを返す。
 pub fn check_detailed(url: String, _remaining: Int) -> #(Outcome, String) {
-  browser_report(browser_check(url))
+  report_from_output(browser_check(url))
 }
+
+// ブラウザ判定スクリプトの出力（CRLF や複数行を含みうる）を、結果と理由にする。
+pub fn report_from_output(output: String) -> #(Outcome, String) {
+  browser_report(first_line(output))
+}
+
+@external(erlang, "beam_watch_ffi", "first_line")
+fn first_line(output: String) -> String
 
 fn browser_report(line: String) -> #(Outcome, String) {
   let line = string.trim(line)

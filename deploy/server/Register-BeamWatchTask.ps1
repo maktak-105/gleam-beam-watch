@@ -2,13 +2,23 @@
 # 常駐タスク Beam-watch と、bunai-server の PostgreSQL 規則と同じ3範囲・Domain の
 # 受信許可 (TCP 8010) を登録する。何度実行しても同じ結果になる。
 # 既存の他タスク・他ファイアウォール規則には触れない。
+#
+# タスクは TaskUser のパスワード保存（ログオン種別 Password）で動かす。SYSTEM では Edge がページを出せないため。
+# パスワードはコマンドラインに出さないよう、環境変数 BW_TASK_PASSWORD で受け取る。
+# TaskUser には「バッチジョブとしてログオン」の権利が要る（Grant-BatchLogonRight.ps1）。
 [CmdletBinding()]
 param(
     [int]$Port = 8010,
-    [string]$PwshPath = 'C:\Program Files\PowerShell\7\pwsh.exe'
+    [string]$PwshPath = 'C:\Program Files\PowerShell\7\pwsh.exe',
+    [Parameter(Mandatory = $true)]
+    [string]$TaskUser
 )
 
 $ErrorActionPreference = 'Stop'
+$taskPassword = $env:BW_TASK_PASSWORD
+if (-not $taskPassword) {
+    throw 'BW_TASK_PASSWORD is not set'
+}
 $appRoot = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $starter = Join-Path $PSScriptRoot 'Start-BeamWatch.ps1'
 
@@ -26,11 +36,11 @@ $trigger = New-ScheduledTaskTrigger -AtStartup
 $settings = New-ScheduledTaskSettingsSet -RestartCount 5 -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -StartWhenAvailable `
     -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-$principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
-
 Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Settings $settings `
-    -Principal $principal -Description 'BEAM Watch GUI on AI195417 (deploy/server/Register-BeamWatchTask.ps1)' -Force | Out-Null
-Write-Output "task registered: $taskName"
+    -User $TaskUser -Password $taskPassword -RunLevel Limited `
+    -Description 'BEAM Watch GUI on AI195417 (deploy/server/Register-BeamWatchTask.ps1)' -Force | Out-Null
+$principal = (Get-ScheduledTask -TaskName $taskName).Principal
+Write-Output "task registered: $taskName as $($principal.UserId) ($($principal.LogonType))"
 
 $ruleName = "BEAM Watch (TCP $Port)"
 $existingRule = Get-NetFirewallRule -DisplayName $ruleName -ErrorAction SilentlyContinue

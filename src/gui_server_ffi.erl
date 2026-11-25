@@ -1,5 +1,12 @@
 -module(gui_server_ffi).
--export([now_iso8601/0, getenv/1]).
+-export([now_iso8601/0, getenv/1, hostname/0]).
+
+%% このマシンのホスト名を小文字の UTF-8 binary で返す。
+hostname() ->
+    case inet:gethostname() of
+        {ok, Name} -> unicode:characters_to_binary(string:lowercase(Name));
+        _ -> <<>>
+    end.
 
 %% ローカル時刻を `YYYY-MM-DDTHH:MM:SS` の UTF-8 binary で返す。
 now_iso8601() ->

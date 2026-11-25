@@ -9,10 +9,11 @@ import gleam/int
 import gleam/io
 import gleam/json
 import gleam/list
-import gleam/option.{type Option, None, Some}
+import gleam/option.{type Option, None}
 import gleam/result
 import gleam/string
 import mist
+import portal
 import simplifile
 import sqlight.{type Connection}
 import wisp.{type Request, type Response}
@@ -31,6 +32,8 @@ const check_wait_ms = 120_000
 const browser_slots = 4
 
 const browser_result_wait_ms = 60_000
+
+const default_portal_dir = "C:/server/Apps/portal"
 
 pub type Target {
   Target(id: Int, url: String)
@@ -55,25 +58,48 @@ type State {
     next_id: Int,
     targets: List(Target),
     db: Connection,
-    checking: Bool,
-    queued: Option(Subject(Result(Nil, String))),
+    check: CheckState,
     interval_seconds: Int,
     interval_unit: String,
     interval_generation: Int,
   )
 }
 
-type CheckReply {
-  NoReply
-  ReplyTo(Subject(Result(Nil, String)))
+/// チェックの進み具合。checking はチェック中、rerun は今の1周のあとにもう1周するか。
+pub type CheckState {
+  CheckState(checking: Bool, rerun: Bool)
+}
+
+/// チェックの依頼（今すぐチェック・URL の追加・自動チェック）への答え。
+pub type CheckStart {
+  Started
+  Queued
+  NoTargets
+}
+
+/// チェックを依頼されたときの次の状態。チェック中なら、今の1周のあとにもう1周する（何回来ても1周だけ）。
+pub fn request_check(
+  state: CheckState,
+  target_count: Int,
+) -> #(CheckState, CheckStart) {
+  case state.checking, target_count {
+    True, _ -> #(CheckState(checking: True, rerun: True), Queued)
+    False, 0 -> #(state, NoTargets)
+    False, _ -> #(CheckState(checking: True, rerun: False), Started)
+  }
+}
+
+/// 1周が終わったときの次の状態と、もう1周するかどうか。
+pub fn finish_check(state: CheckState) -> #(CheckState, Bool) {
+  #(CheckState(checking: False, rerun: False), state.rerun)
 }
 
 type Msg {
   Add(url: String, reply: Subject(Result(Target, String)))
   Delete(id: Int, reply: Subject(Bool))
-  Snapshot(reply: Subject(#(List(Target), List(ResultRow))))
-  StartCheck(reply: CheckReply)
-  CheckDone(rows: List(ResultRow), reply: CheckReply)
+  Snapshot(reply: Subject(#(List(Target), List(ResultRow), Bool)))
+  StartCheck(reply: Subject(CheckStart))
+  CheckDone(rows: List(ResultRow))
   GetSettings(reply: Subject(Settings))
   SetSettings(
     seconds: Int,
@@ -84,7 +110,13 @@ type Msg {
 }
 
 type Context {
-  Context(store: Subject(Msg), gui_dir: String, settings_path: String)
+  Context(
+    store: Subject(Msg),
+    gui_dir: String,
+    settings_path: String,
+    portal_dir: String,
+    hosts: List(String),
+  )
 }
 
 pub fn main() {
@@ -186,7 +218,14 @@ pub fn start() -> Result(Nil, String) {
   let settings_path = filepath.join(gui_dir, "settings.json")
   let #(settings, loaded_targets) = load_settings(settings_path)
   use store <- result.try(start_store(settings, loaded_targets, settings_path))
-  let context = Context(store:, gui_dir:, settings_path:)
+  let context =
+    Context(
+      store:,
+      gui_dir:,
+      settings_path:,
+      portal_dir: configured_portal_dir(),
+      hosts: this_server_hosts(),
+    )
   let secret = wisp.random_string(64)
   let handler = fn(request) { handle_request(request, context) }
 
@@ -234,6 +273,26 @@ fn configured_port() -> Int {
   }
 }
 
+// ポータル（nginx.conf と html/index.html）の場所。表示のたびに読むので、再起動なしで反映される。
+fn configured_portal_dir() -> String {
+  case getenv("BEAM_WATCH_PORTAL_DIR") {
+    Ok(raw) ->
+      case string.trim(raw) {
+        "" -> default_portal_dir
+        dir -> dir
+      }
+    Error(_) -> default_portal_dir
+  }
+}
+
+// エイリアスの URL がこのサーバーのポータルを指しているかを決めるためのホスト名。
+fn this_server_hosts() -> List(String) {
+  case hostname() {
+    "" -> ["localhost", "127.0.0.1"]
+    name -> [name, "localhost", "127.0.0.1"]
+  }
+}
+
 fn gui_directory() -> String {
   case simplifile.current_directory() {
     Ok(dir) -> filepath.join(dir, "gui")
@@ -265,8 +324,7 @@ fn start_store(
             next_id:,
             targets: initial_targets,
             db:,
-            checking: False,
-            queued: None,
+            check: CheckState(checking: False, rerun: False),
             interval_seconds: settings.check_interval_seconds,
             interval_unit: settings.check_interval_unit,
             interval_generation: 0,
@@ -302,7 +360,7 @@ fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
       let #(state, added) = add_target(self, settings_path, state, url)
       process.send(reply, added)
       let state = case added {
-        Ok(_) -> begin_check(self, state, NoReply)
+        Ok(_) -> begin_check(self, state).0
         Error(_) -> state
       }
       loop(self, state, settings_path)
@@ -313,11 +371,18 @@ fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
       loop(self, state, settings_path)
     }
     Snapshot(reply) -> {
-      process.send(reply, #(state.targets, latest_results(state.db)))
+      process.send(reply, #(
+        state.targets,
+        latest_results(state.db),
+        state.check.checking,
+      ))
       loop(self, state, settings_path)
     }
-    StartCheck(reply) ->
-      loop(self, begin_check(self, state, reply), settings_path)
+    StartCheck(reply) -> {
+      let #(state, start) = begin_check(self, state)
+      process.send(reply, start)
+      loop(self, state, settings_path)
+    }
     GetSettings(reply) -> {
       process.send(reply, current_settings(state))
       loop(self, state, settings_path)
@@ -343,8 +408,7 @@ fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
         }
       }
     }
-    CheckDone(rows, reply) -> {
-      let queued = state.queued
+    CheckDone(rows) -> {
       let rows =
         list.filter(rows, fn(row) {
           list.any(state.targets, fn(target) { target.url == row.url })
@@ -353,14 +417,11 @@ fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
         Ok(_) -> Nil
         Error(reason) -> io.println("履歴の保存に失敗しました: " <> reason)
       }
-      let state = State(..state, checking: False, queued: None)
-      case reply {
-        ReplyTo(subject) -> process.send(subject, Ok(Nil))
-        NoReply -> Nil
-      }
-      let state = case queued {
-        Some(subject) -> begin_check(self, state, ReplyTo(subject))
-        None -> state
+      let #(check, run_again) = finish_check(state.check)
+      let state = State(..state, check:)
+      let state = case run_again {
+        True -> begin_check(self, state).0
+        False -> state
       }
       loop(self, state, settings_path)
     }
@@ -369,7 +430,7 @@ fn loop(self: Subject(Msg), state: State, settings_path: String) -> Nil {
         False -> loop(self, state, settings_path)
         True -> {
           schedule_tick(self, state)
-          loop(self, begin_check(self, state, NoReply), settings_path)
+          loop(self, begin_check(self, state).0, settings_path)
         }
       }
     }
@@ -443,46 +504,21 @@ fn delete_target(
   }
 }
 
-fn begin_check(self: Subject(Msg), state: State, reply: CheckReply) -> State {
-  case state.checking {
-    True -> queue_check(state, reply)
-    False -> {
-      case state.targets {
-        [] -> {
-          reply_ok(reply)
-          state
-        }
-        targets -> {
-          process.spawn_unlinked(fn() {
-            process.send(self, CheckDone(check_all(targets), reply))
-          })
-          State(..state, checking: True)
-        }
-      }
+// チェックを依頼する。チェック中でなければ、登録全件のチェックを別プロセスで始める。
+// チェック中なら、今の1周のあとにもう1周する印だけ付ける。どちらもすぐ返る。
+fn begin_check(self: Subject(Msg), state: State) -> #(State, CheckStart) {
+  let #(check, start) = request_check(state.check, list.length(state.targets))
+  case start {
+    Started -> {
+      let targets = state.targets
+      process.spawn_unlinked(fn() {
+        process.send(self, CheckDone(check_all(targets)))
+      })
+      Nil
     }
+    Queued | NoTargets -> Nil
   }
-}
-
-fn queue_check(state: State, reply: CheckReply) -> State {
-  case reply {
-    NoReply -> state
-    ReplyTo(subject) -> {
-      case state.queued {
-        Some(_) -> {
-          process.send(subject, Error("チェック実行中です"))
-          state
-        }
-        None -> State(..state, queued: Some(subject))
-      }
-    }
-  }
-}
-
-fn reply_ok(reply: CheckReply) -> Nil {
-  case reply {
-    ReplyTo(subject) -> process.send(subject, Ok(Nil))
-    NoReply -> Nil
-  }
+  #(State(..state, check:), start)
 }
 
 fn check_all(targets: List(Target)) -> List(ResultRow) {
@@ -571,6 +607,9 @@ fn now_iso8601() -> String
 @external(erlang, "gui_server_ffi", "getenv")
 fn getenv(name: String) -> Result(String, Nil)
 
+@external(erlang, "gui_server_ffi", "hostname")
+fn hostname() -> String
+
 fn handle_request(request: Request, context: Context) -> Response {
   use <- wisp.log_request(request)
   case request.method, request.path_segments(request) {
@@ -590,8 +629,19 @@ fn handle_api(
   context: Context,
 ) -> Response {
   case request.method, path {
-    http.Get, ["targets"] -> json_ok(encode_targets(snapshot(context).0), 200)
-    http.Get, ["results"] -> json_ok(encode_results(snapshot(context).1), 200)
+    http.Get, ["targets"] ->
+      json_ok(
+        encode_targets(
+          snapshot(context).0,
+          portal.load(context.portal_dir),
+          context.hosts,
+        ),
+        200,
+      )
+    http.Get, ["results"] -> {
+      let #(_, rows, checking) = snapshot(context)
+      json_ok(encode_results(rows, checking), 200)
+    }
     http.Post, ["targets"] -> add_from_request(request, context)
     http.Delete, ["targets", id] -> delete_from_request(context, id)
     http.Post, ["check"] -> check_now(context)
@@ -602,7 +652,7 @@ fn handle_api(
   }
 }
 
-fn snapshot(context: Context) -> #(List(Target), List(ResultRow)) {
+fn snapshot(context: Context) -> #(List(Target), List(ResultRow), Bool) {
   process.call(context.store, waiting: check_wait_ms, sending: Snapshot)
 }
 
@@ -670,14 +720,18 @@ fn settings_decoder() -> decode.Decoder(Settings) {
 }
 
 fn check_now(context: Context) -> Response {
-  let checked =
-    process.call(context.store, waiting: check_wait_ms, sending: fn(reply) {
-      StartCheck(ReplyTo(reply))
-    })
-  case checked {
-    Ok(_) -> json_ok(json.object([#("ok", json.bool(True))]), 200)
-    Error(message) -> json_error(message, 409)
+  // チェックの終わりは待たない。受け付けたかどうかだけ返す。
+  let start =
+    process.call(context.store, waiting: check_wait_ms, sending: StartCheck)
+  let #(status, code) = case start {
+    Started -> #("started", 202)
+    Queued -> #("queued", 202)
+    NoTargets -> #("no_targets", 200)
   }
+  json_ok(
+    json.object([#("ok", json.bool(True)), #("status", json.string(status))]),
+    code,
+  )
 }
 
 fn url_decoder() -> decode.Decoder(String) {
@@ -685,8 +739,38 @@ fn url_decoder() -> decode.Decoder(String) {
   decode.success(url)
 }
 
-fn encode_targets(targets: List(Target)) -> json.Json {
-  json.object([#("targets", json.array(targets, encode_target))])
+fn encode_targets(
+  targets: List(Target),
+  loaded: portal.Portal,
+  hosts: List(String),
+) -> json.Json {
+  json.object([
+    #(
+      "targets",
+      json.array(targets, fn(target) {
+        let info = portal.info_for(loaded, target.url, hosts)
+        json.object([
+          #("id", json.int(target.id)),
+          #("url", json.string(target.url)),
+          #(
+            "alias",
+            json.nullable(option.map(info, fn(i) { i.alias }), json.string),
+          ),
+          #(
+            "app",
+            json.nullable(option.then(info, fn(i) { i.app }), json.string),
+          ),
+          #(
+            "destination",
+            json.nullable(
+              option.map(info, fn(i) { i.destination }),
+              json.string,
+            ),
+          ),
+        ])
+      }),
+    ),
+  ])
 }
 
 fn encode_target(target: Target) -> json.Json {
@@ -703,8 +787,11 @@ fn encode_settings(settings: Settings) -> json.Json {
   ])
 }
 
-fn encode_results(rows: List(ResultRow)) -> json.Json {
-  json.object([#("results", json.array(rows, encode_result))])
+fn encode_results(rows: List(ResultRow), checking: Bool) -> json.Json {
+  json.object([
+    #("results", json.array(rows, encode_result)),
+    #("checking", json.bool(checking)),
+  ])
 }
 
 fn encode_result(row: ResultRow) -> json.Json {
