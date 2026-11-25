@@ -6,6 +6,7 @@ const urlInput = document.getElementById('urlInput');
 const addButton = document.getElementById('addButton');
 const refreshButton = document.getElementById('refreshButton');
 const resultsContainer = document.getElementById('resultsContainer');
+const checkStatus = document.getElementById('checkStatus');
 const checkIntervalInput = document.getElementById('checkInterval');
 const intervalUnitSelect = document.getElementById('intervalUnit');
 const saveSettingsButton = document.getElementById('saveSettings');
@@ -159,20 +160,43 @@ async function loadResults() {
         if (response.ok) {
             const data = await response.json();
             results = data.results || [];
+            const wasChecking = checking;
             checking = data.checking === true;
             renderResults();
+            updateCheckUI(wasChecking && !checking);
         }
     } catch (error) {
         console.error('監視結果の読み込みに失敗しました:', error);
     }
 }
 
+// 今すぐチェックのボタンと、その横の表示を今の状態に合わせる。
+// finished はチェックが今終わったとき true。終わった時刻と OK / NG の件数を出す。
+function updateCheckUI(finished) {
+    refreshButton.disabled = checking;
+    refreshButton.textContent = checking ? 'チェック中…' : '今すぐチェック';
+    if (checking) {
+        checkStatus.textContent = '';
+        return;
+    }
+    if (!finished) {
+        return;
+    }
+    const urls = new Set(targets.map(target => target.url));
+    const current = results.filter(result => urls.has(result.url));
+    const ok = current.filter(result => result.status === 'OK').length;
+    const ng = current.filter(result => result.status === 'NG').length;
+    const latest = current.map(result => result.timestamp).sort().pop();
+    const time = latest ? new Date(latest).toLocaleTimeString('ja-JP') : new Date().toLocaleTimeString('ja-JP');
+    checkStatus.textContent = `${time} に確認完了（OK ${ok} / NG ${ng}）`;
+}
+
 // 登録されている対象を、それぞれ最新の OK / NG で出す。
 function renderResults() {
-    resultsContainer.innerHTML = `<h2>監視結果${checking ? ' <span class="checking">チェック中…</span>' : ''}</h2>`;
+    resultsContainer.innerHTML = '';
 
     if (targets.length === 0) {
-        resultsContainer.innerHTML += '<p>監視対象がありません</p>';
+        resultsContainer.innerHTML = '<p>監視対象がありません</p>';
         return;
     }
 
@@ -223,16 +247,16 @@ function renderResults() {
                </div>`
             : `<div class="result-url">${escapeHtml(result.url)}</div>`;
 
+        // 1 行に並べる。理由は NG のときだけ出す（OK の理由は常に「ページが出た」で、OK と同じ意味のため）。
+        const reason = result.status === 'NG' && result.detail
+            ? `<div class="result-reason">${escapeHtml(result.detail)}</div>`
+            : '';
         resultItem.innerHTML = `
-            <div class="result-header">
-                ${title}
-                <div class="result-timestamp">${result.timestamp ? formatDateTime(result.timestamp) : ''}</div>
-            </div>
-            <div class="result-content">
-                <div class="result-status ${statusClass}">${result.status}</div>
-                ${result.detail ? `<div class="result-http-status">${escapeHtml(result.detail)}</div>` : ''}
-                <button class="delete-button" onclick="deleteTarget(${result.id})">削除</button>
-            </div>
+            <div class="result-status ${statusClass}">${result.status}</div>
+            ${title}
+            ${reason}
+            <div class="result-timestamp">${result.timestamp ? formatDateTime(result.timestamp) : ''}</div>
+            <button class="delete-button" onclick="deleteTarget(${result.id})">削除</button>
         `;
         
         resultsList.appendChild(resultItem);
@@ -306,7 +330,7 @@ async function checkAllTargets() {
         // サーバーはチェックの終わりを待たずに返す。結果は5秒ごとの再表示で反映される。
         if (response.ok) {
             checking = true;
-            renderResults();
+            updateCheckUI(false);
             loadResults();
         } else {
             const errorData = await response.json();
