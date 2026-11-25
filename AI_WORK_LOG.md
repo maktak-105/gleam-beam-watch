@@ -354,6 +354,9 @@
 - 調査結果: ポータルの `C:\server\Apps\portal\nginx.conf` 46 行目に `/beam → http://$host:8010/` が、`html/index.html` に BEAM Watch のカードが、2026-11-24 からすでにあった。`http://ai195417/beam` は 302 で `http://ai195417:8010/` へ転送される。足りなかったのは、BEAM Watch の監視対象への登録だけ（9 件に /beam が無かった）。
 - 実装（16:3x）: `/api/targets` で `http://ai195417/beam` を登録した（id 59）。画面では「BEAM Watch /beam → http://ai195417:8010/」と表示される。nginx.conf は変えていない。
 - 指示: コミットしてプッシュする。対象は gui の 3 ファイルとこの記録。rebar3 フォルダの差分（ベンダーのファイル）は含めない。
+- 質問: 「rebar3 フォルダの差分は、ベンダーのファイルの変更でこのプロジェクトのコードではない」とはどういうことか。
+- 調査結果: `rebar3` は公式 `https://github.com/erlang/rebar3.git` を丸ごと clone した別の git リポジトリで、このリポジトリには「どのコミットを使うか」（f23f21b5）だけが記録されている。`.gitmodules` は無い。中の `apps/rebar/src/vendored/r3_safe_erl_term.erl` が変更ありと出るが、`git diff --numstat` は空で、中身の差分は無い。改行コード（LF/CRLF、`core.autocrlf=true`）の扱いで変更ありと見えているだけ。「変更」と言ったのは不正確だった。
+- 対応（指示「やっといて」）: rebar3 フォルダで `git checkout -- apps/rebar/src/vendored/r3_safe_erl_term.erl` を実行した。rebar3 の中も、このリポジトリの `rebar3` も、変更ありの表示が消えた。
 
 ## 2026-11-24 — AI195417 へ常駐配備し、稼働ポートを監視する
 
